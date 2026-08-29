@@ -1,0 +1,7 @@
+Shorts pipeline is a personal desktop tool running on my own computer (Python/FastAPI backend, local web panel). No public server, no users other than me.
+
+Login Kit (user.info.basic): I sign in with my own TikTok account through the desktop OAuth flow with PKCE, redirecting to http://127.0.0.1:8000/api/accounts/tiktok/callback. The scope is read once to get display_name and avatar, so the account can be labelled in the panel.
+
+Content Posting API (video.upload): the tool cuts a long video into vertical clips and renders them locally. I pick a clip and send it to my own account via /v2/post/publish/inbox/video/init/, upload the file in chunks to the returned upload_url, then poll /v2/post/publish/status/fetch/ until SEND_TO_USER_INBOX. The clip lands in the TikTok app inbox as a draft; I review the caption and publish it myself in the app. The tool never posts to a profile directly.
+
+The demo shows the whole path: the panel, connecting the account, sending a clip, the draft in TikTok.

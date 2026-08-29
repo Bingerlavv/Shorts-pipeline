@@ -1,0 +1,33 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.36
+pydantic==2.13.4
+pydantic-settings==2.7.0
+python-multipart==0.0.20
+httpx==0.28.1
+numpy==2.2.1
+pillow==12.3.0
+cryptography==44.0.0
+# Единственная зависимость без верхней границы и с плавающим низом.
+# YouTube регулярно меняет защиту, и рабочим остаётся только свежий yt-dlp:
+# устаревший отваливается с «Sign in to confirm you're not a bot».
+#
+# Стабильные выпуски выходят раз в месяц-полтора — для yt-dlp это долго.
+# 18 августа 2026 стабильная 2026.7.4 уже не могла качать: список качеств
+# читался, а медиа отдавало 403. Ночная сборка того же дня качала без нареканий.
+# Обновлять: pip install -U "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.tar.gz"
+yt-dlp>=2026.8.17
+# Поставщик proof-of-origin токенов. Без него YouTube выдаёт ссылки на медиа,
+# но данные по ним не отдаёт — тот самый 403 при живом списке качеств. Питонья
+# половина только ходит к службе на 4416, саму службу поднимает scripts/run.ps1
+# из tools/pot-provider.
+bgutil-ytdlp-pot-provider>=1.3.1
+anthropic==0.42.0
+openai==1.59.6
+google-api-python-client==2.157.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+# Вход в Instagram логином и паролем (мобильный API). Нужен только для
+# аккаунтов, подключённых без Graph API; pydantic и pillow выше подняты
+# до версий, которые он требует.
+instagrapi==2.18.14

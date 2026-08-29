@@ -1,0 +1,15 @@
+# Локальная транскрипция. Ставится отдельно, потому что тянет CUDA-рантайм (~2 ГБ).
+# Требует Python 3.11 или 3.12 — на 3.13/3.14 колёс ctranslate2 пока нет.
+#
+# Версии не ниже указанных: ctranslate2 до 4.6 импортировал pkg_resources,
+# которого в setuptools 81+ уже нет, и импорт падал на пустом месте.
+faster-whisper==1.2.1
+ctranslate2==4.8.1
+
+# CUDA-библиотеки, которые нужны CTranslate2 для счёта на видеокарте.
+# Без них модель загружается, но падает на первом же сегменте с
+# «Library cublas64_12.dll is not found» — при этом файл лежит в
+# site-packages/nvidia/*/bin, просто Windows туда не смотрит.
+# Каталоги регистрируются в app/providers/stt/local_whisper.py.
+nvidia-cublas-cu12>=12.9.2
+nvidia-cudnn-cu12>=9.24.0

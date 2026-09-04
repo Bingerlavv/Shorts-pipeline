@@ -10,6 +10,7 @@ from . import (
     publications,
     segments,
     system,
+    workers,
 )
 
 api_router = APIRouter()
@@ -23,6 +24,7 @@ for module in (
     jobs,
     events,
     system,
+    workers,
 ):
     api_router.include_router(module.router)
 

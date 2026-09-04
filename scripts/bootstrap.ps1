@@ -75,6 +75,11 @@ if (-not (Test-Path $venvPython)) {
 if ($LASTEXITCODE -ne 0) { throw "не удалось установить зависимости сервера" }
 Write-Ok "зависимости сервера установлены"
 
+# Chromium для patchright — нужен для выкладки в TikTok через свой браузер.
+& $venvPython -m patchright install chromium
+if ($LASTEXITCODE -eq 0) { Write-Ok "Chromium для patchright установлен" }
+else { Write-Warn2 "patchright install chromium не удался — выкладка в TikTok через браузер не заработает, пока не выполнишь его вручную" }
+
 if (-not $SkipGpu) {
     Write-Step "Локальная транскрипция (faster-whisper)"
     $minor = [int]($pythonVersion.Split(".")[1])

@@ -12,6 +12,12 @@
 .PARAMETER NoBot
     Не запускать телеграм-бота, даже если токен задан.
 
+.PARAMETER WorkerOnly
+    Режим машины-воркера: поднимает только воркер (и поставщик токенов).
+    Ни API, ни панель, ни бот не стартуют — они живут на машине с панелью.
+    Общая база задаётся через SHORTS_DATABASE_URL, имя машины — через
+    SHORTS_WORKER_NAME, адрес отдачи файлов — SHORTS_WORKER_PUBLIC_URL.
+
 .PARAMETER NoPot
     Не запускать поставщик proof-of-origin токенов. Без него YouTube отдаёт
     ссылки на медиа, но данные по ним не выдаёт — загрузка падает с 403.
@@ -19,6 +25,7 @@
 [CmdletBinding()]
 param(
     [switch]$Prod,
+    [switch]$WorkerOnly,
     [switch]$NoWorker,
     [switch]$NoBot,
     [switch]$NoPot
@@ -119,9 +126,15 @@ function Start-PotProvider {
     return Start-Component "поставщик токенов" $node @("build\main.js") $potDir
 }
 
+if ($WorkerOnly -and $NoWorker) {
+    throw "-WorkerOnly и -NoWorker вместе не имеют смысла: запускать было бы нечего"
+}
+
 try {
-    Assert-PortFree 8000 "API"
-    Test-Ollama
+    if (-not $WorkerOnly) {
+        Assert-PortFree 8000 "API"
+        Test-Ollama
+    }
     if (-not $NoPot) {
         # Пустой результат означает «не запускали»: в $processes его класть
         # нельзя, иначе следящий цикл споткнётся о null вместо процесса.
@@ -135,7 +148,7 @@ try {
 
     # Бот стартует, только если задан токен: без него процесс всё равно
     # сразу завершится, а скрипт решит, что упал компонент, и погасит остальные.
-    if (-not $NoBot) {
+    if (-not $NoBot -and -not $WorkerOnly) {
         $envFile = Join-Path $repo ".env"
         $hasToken = $false
         if (Test-Path $envFile) {
@@ -149,6 +162,11 @@ try {
             Write-Host "телеграм-бот пропущен: SHORTS_TELEGRAM_BOT_TOKEN не задан" -ForegroundColor DarkGray
         }
     }
+
+    if ($WorkerOnly) {
+        Write-Host "`nРежим воркера: API и панель не поднимаю." -ForegroundColor Green
+        Write-Host "Задачи беру из общей базы SHORTS_DATABASE_URL." -ForegroundColor DarkGray
+    } else {
 
     $processes += Start-Component "API" $venvPython `
         @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000") $serverDir
@@ -186,6 +204,8 @@ try {
         Write-Host "Не открывай http://localhost:8000 — там лежит собранная копия," -ForegroundColor DarkYellow
         Write-Host "которая обновляется только запуском с ключом -Prod" -ForegroundColor DarkYellow
         Start-Process "http://localhost:5173"
+    }
+
     }
 
     Write-Host "`nCtrl+C — остановить всё.`n" -ForegroundColor Yellow

@@ -12,7 +12,7 @@ from typing import Any
 from ...config import settings
 from ...media import extract_audio, extract_thumbnail, has_burned_subtitles, probe_media
 from ...models import Project, ProjectStatus
-from ...queue import enqueue
+from ...queue import enqueue, fleet
 from ...utils.text import safe_filename
 from ..context import JobContext
 from ..registry import handler
@@ -401,6 +401,13 @@ def run_ingest(ctx: JobContext) -> None:
             "в исходнике нет звуковой дорожки — монтаж собирает ролик со звуком "
             "и без неё не соберётся"
         )
+
+    # Файлы лягут здесь и никуда не поедут — закрепляем проект за этой машиной,
+    # дальше все его задачи (нарезка, монтаж) уйдут только сюда.
+    worker_id = fleet.current_id()
+    if worker_id is not None and project.worker_id != worker_id:
+        project.worker_id = worker_id
+        ctx.info(f"проект закреплён за воркером {fleet.resolve_name()}")
 
     project.video_path = str(video_path)
     project.duration = info.duration

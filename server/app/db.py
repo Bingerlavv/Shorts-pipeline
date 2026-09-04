@@ -25,6 +25,10 @@ engine = create_engine(
     _url,
     echo=False,
     future=True,
+    # Воркеры ходят в общую БД через интернет: соединение рвётся молча, и без
+    # проверки перед выдачей из пула первая же задача падает на «server closed».
+    pool_pre_ping=not _is_sqlite,
+    pool_recycle=-1 if _is_sqlite else 300,
     connect_args={"check_same_thread": False, "timeout": 30} if _is_sqlite else {},
 )
 
@@ -74,21 +78,7 @@ def init_db() -> None:
     # create_all() не меняет уже существующие таблицы, поэтому новые колонки
     # доливаем сами. Проверка по факту, а не по номеру версии: миграций в
     # проекте нет, а городить их ради пары полей — лишнее.
-    with engine.begin() as connection:
-        known = {
-            row[1] for row in connection.execute(text("PRAGMA table_info(projects)"))
-        }
-        if "telegram_chat_id" not in known:
-            connection.execute(
-                text("ALTER TABLE projects ADD COLUMN telegram_chat_id INTEGER DEFAULT 0")
-            )
-
-    with engine.begin() as connection:
-        known = {
-            row[1] for row in connection.execute(text("PRAGMA table_info(segments)"))
-        }
-        if "publish_at" not in known:
-            connection.execute(text("ALTER TABLE segments ADD COLUMN publish_at DATETIME"))
+    _add_missing_columns()
 
     _migrate_publish_targets()
 
@@ -201,3 +191,32 @@ def _migrate_publish_targets() -> None:
         )
     finally:
         db.close()
+
+
+# Колонки, которые доливаются к уже существующим таблицам. Тип пишем в общем
+# для SQLite и Postgres виде, поэтому обходимся без диалектных веток.
+_EXTRA_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("projects", "telegram_chat_id", "INTEGER DEFAULT 0"),
+    ("segments", "publish_at", "TIMESTAMP"),
+    # Разъезд по машинам: за кем закреплён проект (там лежат его файлы),
+    # на какой воркер обязана уйти задача, чей профиль у аккаунта.
+    ("projects", "worker_id", "INTEGER"),
+    ("jobs", "worker_id", "INTEGER"),
+    ("accounts", "worker_id", "INTEGER"),
+)
+
+
+def _add_missing_columns() -> None:
+    from sqlalchemy import inspect
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    for table, column, ddl in _EXTRA_COLUMNS:
+        if table not in tables:
+            continue
+        known = {item["name"] for item in inspector.get_columns(table)}
+        if column in known:
+            continue
+        with engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        log.info("добавлена колонка %s.%s", table, column)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hmac
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -106,6 +108,54 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Пути, которые обязаны работать без входа. Подписанная ссылка на готовый ролик:
+# по ней ходит Instagram из интернета, спросить у него логин не у кого — там
+# защитой служит сама подпись (см. verify_download_token).
+_OPEN_PATHS = ("/api/health",)
+
+
+def _is_open(request: Request) -> bool:
+    path = request.url.path
+    if path in _OPEN_PATHS:
+        return True
+    if path.endswith("/render") and path.startswith("/api/segments/"):
+        return bool(request.query_params.get("token"))
+    return False
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):  # noqa: ANN001, ANN201
+    """Basic-аутентификация панели.
+
+    Пароль не задан — не спрашиваем ничего: на одной машине панель слушает
+    localhost, и лишний барьер только мешает. Как только панель выставлена
+    наружу (а с удалёнными воркерами так и будет), пароль становится
+    обязательным — им же воркеры забирают материалы.
+    """
+    if not settings.panel_password or _is_open(request):
+        return await call_next(request)
+
+    header = request.headers.get("authorization", "")
+    if header.startswith("Basic "):
+        try:
+            raw = base64.b64decode(header[6:]).decode("utf-8")
+            user, _, password = raw.partition(":")
+        except Exception:  # noqa: BLE001
+            user = password = ""
+        # compare_digest на обоих полях: сравнение по времени не должно
+        # подсказывать, угадан ли логин.
+        ok_user = hmac.compare_digest(user, settings.panel_user)
+        ok_password = hmac.compare_digest(password, settings.panel_password)
+        if ok_user and ok_password:
+            return await call_next(request)
+
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "нужен вход в панель"},
+        headers={"WWW-Authenticate": 'Basic realm="Shorts", charset="UTF-8"'},
+    )
 
 
 @app.exception_handler(MediaError)

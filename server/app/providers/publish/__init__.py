@@ -15,6 +15,7 @@ from .base import (
 from .instagram import InstagramPublisher
 from .instagram_login import InstagramLoginPublisher
 from .tiktok import TikTokPublisher
+from .tiktok_browser import TikTokBrowserPublisher
 from .youtube import YouTubePublisher
 
 _PUBLISHERS: dict[str, type[Publisher]] = {
@@ -40,17 +41,34 @@ def _instagram_builder(
     return InstagramLoginPublisher if auth == "login" else InstagramPublisher
 
 
+def _tiktok_builder(
+    credentials: dict[str, Any], meta: dict[str, Any] | None
+) -> type[Publisher]:
+    """У TikTok два пути, площадка одна.
+
+    api — официальный Content Posting API по OAuth-токену,
+    patchright — свой профиль Chromium под Patchright (обход аудита).
+    """
+    auth = (meta or {}).get("auth")
+    if not auth:
+        auth = "patchright" if credentials.get("profile_dir") else "api"
+    return TikTokBrowserPublisher if auth == "patchright" else TikTokPublisher
+
+
+_BUILDERS: dict[str, Any] = {
+    "instagram": _instagram_builder,
+    "tiktok": _tiktok_builder,
+}
+
+
 def build_publisher(platform: str, credentials: dict[str, Any],
                     meta: dict[str, Any] | None = None) -> Publisher:
     if platform not in _PUBLISHERS:
         raise PublishError(
             f"неизвестная площадка: {platform!r}. Доступны: {', '.join(_PUBLISHERS)}"
         )
-    builder = (
-        _instagram_builder(credentials, meta)
-        if platform == "instagram"
-        else _PUBLISHERS[platform]
-    )
+    chooser = _BUILDERS.get(platform)
+    builder = chooser(credentials, meta) if chooser else _PUBLISHERS[platform]
     return builder(credentials, meta)
 
 
@@ -64,6 +82,7 @@ __all__ = [
     "PLATFORMS",
     "InstagramLoginPublisher",
     "InstagramPublisher",
+    "TikTokBrowserPublisher",
     "TikTokPublisher",
     "PublishError",
     "PublishRequest",

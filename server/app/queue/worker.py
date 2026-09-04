@@ -8,9 +8,7 @@
 from __future__ import annotations
 
 import logging
-import os
 import signal
-import socket
 import sys
 import threading
 import time
@@ -18,9 +16,11 @@ import traceback
 
 from ..config import settings
 from ..db import SessionLocal, init_db
+from ..agent.files import start_file_server
+from ..models import Worker
 from ..pipeline import registry
 from ..pipeline.context import JobCancelled, JobContext
-from . import manager
+from . import fleet, manager
 
 log = logging.getLogger("worker")
 
@@ -28,10 +28,20 @@ POLL_INTERVAL = 1.5
 STALE_SWEEP_INTERVAL = 300
 
 _shutdown = threading.Event()
+# Снят — воркер выключили из панели: текущие задачи доделываем, новых не берём.
+_accepting = threading.Event()
+_worker_row_id: int | None = None
+
+# Сколько задач в работе прямо сейчас — уходит в отметку для панели.
+_running = 0
+_running_lock = threading.Lock()
 
 
-def _worker_id(index: int) -> str:
-    return f"{socket.gethostname()}:{os.getpid()}:{index}"
+def _track_running(delta: int) -> int:
+    global _running
+    with _running_lock:
+        _running = max(0, _running + delta)
+        return _running
 
 
 def _propagate_failure(db, job) -> None:  # noqa: ANN001
@@ -117,13 +127,16 @@ def _run_job(db, job, worker_id: str) -> None:
 
 
 def _loop(index: int) -> None:
-    worker_id = _worker_id(index)
+    tag = fleet.process_tag(index)
     db = SessionLocal()
-    log.info("поток %s запущен", worker_id)
+    log.info("поток %s запущен", tag)
     try:
         while not _shutdown.is_set():
+            if not _accepting.is_set():
+                _shutdown.wait(POLL_INTERVAL * 2)
+                continue
             try:
-                job = manager.claim_next(db, worker_id)
+                job = manager.claim_next(db, tag, _worker_row_id)
             except Exception:  # noqa: BLE001
                 log.exception("не удалось забрать задачу")
                 _shutdown.wait(POLL_INTERVAL * 4)
@@ -133,10 +146,55 @@ def _loop(index: int) -> None:
                 _shutdown.wait(POLL_INTERVAL)
                 continue
 
-            _run_job(db, job, worker_id)
+            _track_running(+1)
+            try:
+                _run_job(db, job, tag)
+            finally:
+                _track_running(-1)
     finally:
         db.close()
-        log.info("поток %s остановлен", worker_id)
+        log.info("поток %s остановлен", tag)
+
+
+def _heartbeat() -> None:
+    """Отметка в реестре: жив, столько-то в работе, столько-то места.
+
+    Тут же забираем из панели признак «выключен» — им гасится приём новых
+    задач без остановки процесса.
+    """
+    db = SessionLocal()
+    try:
+        while not _shutdown.wait(fleet.HEARTBEAT_INTERVAL):
+            try:
+                with _running_lock:
+                    busy = _running
+                if _worker_row_id is None or not fleet.heartbeat(db, _worker_row_id, busy):
+                    log.warning("запись воркера пропала из реестра — регистрируюсь заново")
+                    _register(db)
+                    continue
+                worker = db.get(Worker, _worker_row_id)
+                if worker is not None:
+                    if worker.is_enabled and not _accepting.is_set():
+                        log.info("воркер включён из панели — беру задачи")
+                        _accepting.set()
+                    elif not worker.is_enabled and _accepting.is_set():
+                        log.info("воркер выключен из панели — новых задач не беру")
+                        _accepting.clear()
+            except Exception:  # noqa: BLE001
+                log.exception("отметка в реестре не прошла")
+    finally:
+        db.close()
+
+
+def _register(db) -> None:  # noqa: ANN001
+    global _worker_row_id
+    worker = fleet.register(db)
+    _worker_row_id = worker.id
+    if worker.is_enabled:
+        _accepting.set()
+    else:
+        _accepting.clear()
+        log.warning("воркер числится выключенным — жду включения из панели")
 
 
 def _stale_sweeper() -> None:
@@ -168,11 +226,15 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        restored = manager.reset_running_on_boot(db)
+        _register(db)
+        # Только свои: чужие RUNNING в общей БД — это работа живых воркеров.
+        restored = manager.reset_running_on_boot(db, f"{fleet.resolve_name()}:")
         if restored:
             log.warning("восстановлено задач после прошлого запуска: %s", restored)
     finally:
         db.close()
+
+    files_server = start_file_server()
 
     def _handle_signal(_signum, _frame):  # noqa: ANN001
         log.info("получен сигнал остановки, доделываем текущие задачи…")
@@ -186,6 +248,7 @@ def main() -> int:
         for i in range(max(1, settings.worker_concurrency))
     ]
     threads.append(threading.Thread(target=_stale_sweeper, name="stale-sweeper", daemon=True))
+    threads.append(threading.Thread(target=_heartbeat, name="heartbeat", daemon=True))
     for thread in threads:
         thread.start()
 
@@ -198,6 +261,8 @@ def main() -> int:
 
     for thread in threads:
         thread.join(timeout=30)
+    if files_server is not None:
+        files_server.stop()
     return 0
 
 

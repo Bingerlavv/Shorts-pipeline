@@ -8,6 +8,7 @@ import ProjectPage from "./pages/ProjectPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import QueuePage from "./pages/QueuePage";
 import SystemPage from "./pages/SystemPage";
+import WorkersPage from "./pages/WorkersPage";
 
 // Три разных занятия, и мешать их в одном списке незачем: с работой имеешь дело
 // каждый день, настройки трогаешь изредка, служебное — когда что-то сломалось.
@@ -31,6 +32,7 @@ const NAV: { title: string; items: { to: string; label: string; counter?: "jobs"
     title: "Служебное",
     items: [
       { to: "/queue", label: "Очередь", counter: "jobs" },
+      { to: "/workers", label: "Воркеры" },
       { to: "/system", label: "Диагностика" },
     ],
   },
@@ -89,6 +91,7 @@ export default function App() {
           <Route path="/presets" element={<PresetsPage />} />
           <Route path="/assets" element={<AssetsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
+          <Route path="/workers" element={<WorkersPage />} />
           <Route path="/system" element={<SystemPage />} />
           <Route
             path="*"

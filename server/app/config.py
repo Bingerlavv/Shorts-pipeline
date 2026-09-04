@@ -25,6 +25,32 @@ class Settings(BaseSettings):
     storage_dir: Path = Field(default=REPO_ROOT / "storage", alias="SHORTS_STORAGE_DIR")
     database_url: str = Field(default="", alias="SHORTS_DATABASE_URL")
     worker_concurrency: int = Field(default=2, alias="SHORTS_WORKER_CONCURRENCY")
+
+    # --- воркер как отдельная машина ---
+    # Имя, под которым воркер числится в панели. Пусто — берём имя хоста.
+    # Оно же ключ, по которому за воркером закрепляются проекты и аккаунты,
+    # поэтому менять его на живой установке нельзя: файлы останутся на месте,
+    # а закрепления уедут.
+    worker_name: str = Field(default="", alias="SHORTS_WORKER_NAME")
+    # Адрес, по которому панель заберёт у воркера превью и готовые ролики.
+    # Пусто — панель просто не покажет файлы этого воркера, остальное работает.
+    worker_public_url: str = Field(default="", alias="SHORTS_WORKER_PUBLIC_URL")
+    # Порт файловой отдачи воркера. 0 — не поднимать сервер файлов вовсе.
+    worker_files_port: int = Field(default=8770, alias="SHORTS_WORKER_FILES_PORT")
+    # Что этот воркер умеет: через запятую, например "gpu,whisper,browser".
+    # Пусто — определим сами по окружению.
+    worker_labels: str = Field(default="", alias="SHORTS_WORKER_LABELS")
+    # Адрес панели. Воркер берёт оттуда материалы монтажа (маски, баннеры, LUT,
+    # шрифты) — их загружают один раз в панель, а не раскладывают по машинам.
+    # Пусто — материалы ищутся только на локальном диске.
+    panel_url: str = Field(default="", alias="SHORTS_PANEL_URL")
+
+    # --- доступ к панели ---
+    # Пароль пустой — вход не спрашивается (одна машина, никого вокруг).
+    # Задан — панель закрывается basic-аутентификацией, и те же логин с паролем
+    # воркер использует, чтобы забирать материалы.
+    panel_user: str = Field(default="shorts", alias="SHORTS_PANEL_USER")
+    panel_password: str = Field(default="", alias="SHORTS_PANEL_PASSWORD")
     public_base_url: str = Field(default="", alias="SHORTS_PUBLIC_BASE_URL")
 
     ffmpeg_path: str = Field(default="", alias="SHORTS_FFMPEG_PATH")
@@ -70,6 +96,10 @@ class Settings(BaseSettings):
     # и 127.0.0.1 для TikTok — разные адреса, лишний слэш тоже ломает вход.
     # Пусто — берём http://127.0.0.1:8000/api/accounts/tiktok/callback.
     tiktok_redirect_uri: str = Field(default="", alias="TIKTOK_REDIRECT_URI")
+    # Выкладка в TikTok через свой браузер (Patchright), в обход аудита
+    # приложения. Пусто — встроенный Chromium от patchright (нужен один раз
+    # `patchright install chromium`); "chrome" — системный Chrome.
+    tiktok_browser_channel: str = Field(default="", alias="TIKTOK_BROWSER_CHANNEL")
     instagram_app_id: str = Field(default="", alias="INSTAGRAM_APP_ID")
     instagram_app_secret: str = Field(default="", alias="INSTAGRAM_APP_SECRET")
     # Вход по логину и паролю — их читает только scripts/ig_publish.py.
@@ -115,6 +145,15 @@ class Settings(BaseSettings):
     def models_dir(self) -> Path:
         return self.storage_dir / "models"
 
+    @property
+    def tiktok_dir(self) -> Path:
+        return self.storage_dir / "tiktok"
+
+    @property
+    def asset_cache_dir(self) -> Path:
+        """Куда воркер складывает материалы, скачанные с панели."""
+        return self.storage_dir / "assets" / "cache"
+
     def resolved_database_url(self) -> str:
         if self.database_url:
             return self.database_url
@@ -149,6 +188,7 @@ class Settings(BaseSettings):
             self.assets_dir,
             self.thumbs_dir,
             self.models_dir,
+            self.tiktok_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 

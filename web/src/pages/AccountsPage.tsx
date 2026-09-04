@@ -2,14 +2,16 @@ import { useState } from "react";
 import { ApiError, api } from "../api";
 import { Banner, Empty, Modal, formatDate } from "../components/ui";
 import { useAsync } from "../hooks/useLiveState";
-import type { Account, Project } from "../types";
+import type { Account, Project, Worker } from "../types";
 
 export default function AccountsPage() {
   const accounts = useAsync<Account[]>(() => api.accounts.list(), []);
   const projects = useAsync<Project[]>(() => api.projects.list(), []);
+  const workers = useAsync<Worker[]>(() => api.workers.list(), []);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [igOpen, setIgOpen] = useState(false);
+  const [ttBrowserOpen, setTtBrowserOpen] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
 
   const setProjects = async (account: Account, ids: number[]) => {
@@ -77,6 +79,7 @@ export default function AccountsPage() {
         <div className="row">
           <button onClick={connectYoutube}>Подключить YouTube</button>
           <button onClick={connectTiktok}>Подключить TikTok</button>
+          <button onClick={() => setTtBrowserOpen(true)}>TikTok (браузер)</button>
           <button onClick={() => setIgOpen(true)}>Подключить Instagram</button>
           <button onClick={accounts.reload}>Обновить</button>
         </div>
@@ -114,6 +117,7 @@ export default function AccountsPage() {
                 <th>Аккаунт</th>
                 <th>Состояние</th>
                 <th>Что публикуем сюда</th>
+                <th>Воркер</th>
                 <th className="nowrap">Подключён</th>
                 <th />
               </tr>
@@ -158,8 +162,55 @@ export default function AccountsPage() {
                       </button>
                     </div>
                   </td>
+                  <td>
+                    <select
+                      value={account.worker_id ?? ""}
+                      onChange={async (event) => {
+                        setError("");
+                        try {
+                          const value = event.target.value;
+                          await api.accounts.setWorker(account.id, value ? Number(value) : null);
+                          accounts.reload();
+                        } catch (exc) {
+                          setError((exc as Error).message);
+                        }
+                      }}
+                    >
+                      <option value="">любой</option>
+                      {(workers.data ?? []).map((worker) => (
+                        <option key={worker.id} value={worker.id}>
+                          {worker.name}
+                          {worker.online ? "" : " (офлайн)"}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="muted" style={{ fontSize: 11.5 }}>
+                      {account.meta?.auth === "patchright"
+                        ? "профиль браузера — на этой машине"
+                        : "по API: можно с любой"}
+                    </div>
+                  </td>
                   <td className="muted nowrap">{formatDate(account.created_at)}</td>
                   <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    {account.meta?.auth === "patchright" && (
+                      <>
+                        <button
+                          className="small"
+                          onClick={async () => {
+                            setError("");
+                            try {
+                              const { message } = await api.accounts.tiktokRelogin(account.id);
+                              setNotice(message);
+                              accounts.reload();
+                            } catch (exc) {
+                              setError((exc as Error).message);
+                            }
+                          }}
+                        >
+                          Войти в TikTok
+                        </button>{" "}
+                      </>
+                    )}
                     <button className="small" onClick={() => verify(account)}>
                       Проверить
                     </button>{" "}
@@ -256,7 +307,154 @@ export default function AccountsPage() {
           }}
         />
       )}
+
+      {ttBrowserOpen && (
+        <TikTokBrowserConnect
+          onClose={() => setTtBrowserOpen(false)}
+          onConnected={(message) => {
+            setTtBrowserOpen(false);
+            setNotice(message);
+            accounts.reload();
+          }}
+        />
+      )}
     </>
+  );
+}
+
+function TikTokBrowserConnect({
+  onClose,
+  onConnected,
+}: {
+  onClose: () => void;
+  onConnected: (message: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [advanced, setAdvanced] = useState(false);
+  const [proxy, setProxy] = useState("");
+  const [locale, setLocale] = useState("");
+  const [timezone, setTimezone] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.accounts.tiktokBrowser({
+        name: name.trim(),
+        proxy: proxy.trim(),
+        locale: locale.trim(),
+        timezone: timezone.trim(),
+        login_now: true,
+      });
+      onConnected(
+        "Профиль создан, открывается окно входа в TikTok. Войди в аккаунт — окно " +
+          "закроется само, затем нажми «Обновить».",
+      );
+    } catch (exc) {
+      setError((exc as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="TikTok через свой браузер" onClose={onClose}>
+      <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+        Обход аудита приложения TikTok: ролик грузится в TikTok Studio из
+        отдельного профиля Chromium под управлением Patchright. Вход в TikTok
+        выполняется один раз в видимом окне — дальше выкладка идёт скрыто.
+        Нужен установленный Chromium:{" "}
+        <span className="mono">.venv\Scripts\patchright install chromium</span>{" "}
+        (ставится и через bootstrap).
+      </p>
+
+      <div className="field">
+        <label>Название в панели</label>
+        <input
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="@аккаунт или как удобно"
+          autoComplete="off"
+        />
+        <div className="muted" style={{ fontSize: 12 }}>
+          Заменится на @ник, как только вход пройдёт. По названию создаётся папка
+          профиля в <span className="mono">storage/tiktok/</span>.
+        </div>
+      </div>
+
+      <div className="row">
+        <button className="small" onClick={() => setAdvanced(!advanced)}>
+          {advanced ? "Скрыть дополнительное" : "Прокси и гео профиля"}
+        </button>
+      </div>
+
+      {advanced && (
+        <div style={{ marginTop: 12 }}>
+          <div className="field">
+            <label>Прокси</label>
+            <input
+              value={proxy}
+              onChange={(event) => setProxy(event.target.value)}
+              placeholder="194.71.107.74:11368:логин:пароль"
+              autoComplete="off"
+            />
+            <div className="muted" style={{ fontSize: 12 }}>
+              Весь трафик профиля пойдёт через него. Принимается и вид продавцов
+              <code> host:port:логин:пароль</code>, и <code>схема://логин:пароль@host:port</code>.
+              Меняешь прокси — заходи из-под того же адреса, иначе TikTok попросит
+              проверку.
+            </div>
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label>Язык интерфейса</label>
+              <input
+                value={locale}
+                onChange={(event) => setLocale(event.target.value)}
+                placeholder="ru-RU"
+                autoComplete="off"
+              />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label>Часовой пояс</label>
+              <input
+                value={timezone}
+                onChange={(event) => setTimezone(event.target.value)}
+                placeholder="Europe/Moscow"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            Профилю раз и навсегда закрепляется «устройство»: язык, пояс, размер
+            экрана, версия Windows — а UA и Client Hints берутся у реального
+            встроенного Chromium. Язык и пояс задавай под страну прокси; пусто —
+            подберутся автоматически и геонейтрально.
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        <button className="primary" disabled={busy || !name.trim()} onClick={submit}>
+          {busy ? "Создаю…" : "Создать профиль и войти"}
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ marginTop: 12 }}>
+          <Banner tone="err">{error}</Banner>
+        </div>
+      )}
+
+      <Banner tone="warn">
+        Окно входа открывается на машине сервера. Режим выкладки — в пресете:
+        «Публикация» → TikTok → mode: <code>draft</code> кладёт ролик в черновики
+        TikTok Studio, <code>direct</code> жмёт «Опубликовать». Флаг{" "}
+        <code>headless</code> там же прячет окно выкладки.
+      </Banner>
+    </Modal>
   );
 }
 

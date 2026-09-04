@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import re
 import secrets
+import threading
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -16,9 +18,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..db import get_db
-from ..models import Account, Project, Publication
+from ..db import SessionLocal, get_db
+from ..models import Account, Project, Publication, Worker
 from ..providers.publish import PLATFORMS, PublishError, publisher_for_account
+from ..providers.publish.tiktok_device import make_device
 from ..providers.publish.instagram import (
     discover_instagram_accounts,
     exchange_long_lived_token,
@@ -39,6 +42,8 @@ from ..schemas import (
     InstagramLoginResult,
     InstagramSelect,
     LinkProjects,
+    PinWorker,
+    TikTokBrowserConnect,
 )
 from ..utils.crypto import CredentialsError, encrypt_json
 from ..utils.text import redact_secrets
@@ -80,6 +85,7 @@ def _youtube_flow(redirect_uri: str):  # noqa: ANN202
 def _account_out(account: Account) -> AccountOut:
     data = AccountOut.model_validate(account)
     data.project_ids = [p.id for p in account.projects]
+    data.worker_name = account.worker.name if account.worker else ""
     return data
 
 
@@ -304,6 +310,26 @@ def set_account_projects(
 
     order = {pid: index for index, pid in enumerate(wanted)}
     account.projects = sorted(found, key=lambda p: order[p.id])
+    db.commit()
+    db.refresh(account)
+    return _account_out(account)
+
+
+@router.put("/{account_id}/worker", response_model=AccountOut)
+def set_account_worker(
+    account_id: int, payload: PinWorker, db: Session = Depends(get_db)
+) -> AccountOut:
+    """Закрепляет аккаунт за машиной.
+
+    Профиль браузера и сессия площадки лежат на конкретном воркере и не
+    переезжают, поэтому публикация обязана идти именно туда. Пусто — публикует
+    любой свободный: годится для аккаунтов на официальных API, у них состояние
+    в токене, а не на диске.
+    """
+    account = _get_account(db, account_id)
+    if payload.worker_id is not None and db.get(Worker, payload.worker_id) is None:
+        raise HTTPException(404, f"воркер {payload.worker_id} не найден")
+    account.worker_id = payload.worker_id
     db.commit()
     db.refresh(account)
     return _account_out(account)
@@ -565,3 +591,116 @@ def tiktok_callback(
     return HTMLResponse(
         _result_page(f"Аккаунт «{account.name}» подключён.{note} Окно можно закрыть.", ok=True)
     )
+
+
+def _tiktok_profile_slug(name: str) -> str:
+    """Имя каталога профиля: латиница из названия плюс хвост от хэша против коллизий."""
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return f"{base or 'acc'}-{hashlib.sha1(name.encode('utf-8')).hexdigest()[:6]}"
+
+
+def _tiktok_browser_login(account_id: int) -> None:
+    """Открывает видимое окно входа в TikTok и дописывает аккаунт по итогу.
+
+    Крутится в отдельном потоке: вход руками, ждать его в HTTP-запросе нельзя.
+    """
+    db = SessionLocal()
+    try:
+        account = db.get(Account, account_id)
+        if account is None:
+            return
+        try:
+            publisher = publisher_for_account(account)
+            name = publisher.login_interactive(
+                timeout=300, on_log=lambda msg: log.info("вход в TikTok: %s", msg)
+            )
+        except Exception as exc:  # noqa: BLE001
+            account.is_active = False
+            account.last_error = redact_secrets(str(exc)) or "вход в TikTok не выполнен"
+            db.commit()
+            return
+
+        # Устройство профиля могло досоздаться при первом запуске браузера.
+        refreshed = publisher.refreshed_credentials()
+        if refreshed:
+            account.credentials_enc = encrypt_json(refreshed)
+
+        account.is_active = True
+        account.last_error = ""
+        if name:
+            account.name = f"@{name}"
+            account.meta = {**(account.meta or {}), "username": name}
+        db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/tiktok/browser", response_model=AccountOut, status_code=201)
+def tiktok_browser_connect(
+    payload: TikTokBrowserConnect, db: Session = Depends(get_db)
+) -> AccountOut:
+    """Подключение TikTok через свой браузер (Patchright) — в обход аудита.
+
+    OAuth здесь нет: создаём отдельный профиль Chromium и (по умолчанию) сразу
+    открываем видимое окно для входа в TikTok. Пока вход не пройден, аккаунт
+    выключен.
+    """
+    slug = _tiktok_profile_slug(payload.name)
+    profile_rel = f"tiktok/{slug}"
+    (settings.tiktok_dir / slug).mkdir(parents=True, exist_ok=True)
+
+    credentials: dict[str, Any] = {
+        "profile_dir": profile_rel,
+        "proxy": payload.proxy,
+        "channel": settings.tiktok_browser_channel,
+        # Замороженное «устройство» профиля: язык, пояс, экран, версия Windows.
+        # UA и Client Hints потом берутся у реального Chromium.
+        "device": make_device(
+            slug, locale=payload.locale, timezone_id=payload.timezone
+        ),
+    }
+    try:
+        account = _upsert_account(
+            db,
+            "tiktok",
+            f"browser:{slug}",
+            payload.name,
+            credentials,
+            {"auth": "patchright", "profile_dir": profile_rel, "username": ""},
+        )
+    except CredentialsError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    account.is_active = False
+    if payload.login_now:
+        account.last_error = "открываю окно входа в TikTok…"
+        db.commit()
+        threading.Thread(
+            target=_tiktok_browser_login, args=(account.id,), daemon=True
+        ).start()
+    else:
+        account.last_error = (
+            "профиль создан — нажми «Войти в TikTok» или запусти "
+            r".venv\Scripts\python scripts\tiktok_login.py"
+        )
+        db.commit()
+
+    db.refresh(account)
+    return _account_out(account)
+
+
+@router.post("/{account_id}/tiktok-login")
+def tiktok_relogin(account_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Открывает окно входа для уже заведённого браузерного аккаунта TikTok."""
+    account = _get_account(db, account_id)
+    if (account.meta or {}).get("auth") != "patchright":
+        raise HTTPException(400, "это не аккаунт TikTok через свой браузер")
+    account.last_error = "открываю окно входа в TikTok…"
+    db.commit()
+    threading.Thread(
+        target=_tiktok_browser_login, args=(account.id,), daemon=True
+    ).start()
+    return {
+        "ok": True,
+        "message": "Окно входа открывается. Войди в TikTok и обнови список.",
+    }

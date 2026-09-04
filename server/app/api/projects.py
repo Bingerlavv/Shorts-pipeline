@@ -84,6 +84,7 @@ def _to_out(db: Session, project: Project) -> ProjectOut:
     data.segment_count = int(count or 0)
     data.has_transcript = project.transcript is not None
     data.account_ids = [account.id for account in project.accounts]
+    data.worker_name = project.worker.name if project.worker else ""
     return data
 
 

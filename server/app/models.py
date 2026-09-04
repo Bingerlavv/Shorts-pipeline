@@ -118,6 +118,11 @@ class Project(Base):
     # 0 — проект заведён из панели.
     telegram_chat_id: Mapped[int] = mapped_column(Integer, default=0)
     source_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # На какой машине лежат файлы проекта. Ставится на стадии загрузки и
+    # дальше держит все его задачи на том же воркере.
+    worker_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workers.id", ondelete="SET NULL"), index=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -134,6 +139,7 @@ class Project(Base):
     accounts: Mapped[list["Account"]] = relationship(
         secondary=account_projects, back_populates="projects", order_by="Account.name"
     )
+    worker: Mapped["Worker | None"] = relationship(lazy="joined")
 
 
 class Transcript(Base):
@@ -245,6 +251,43 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Worker(Base):
+    """Машина, которая тянет задачи из общей очереди.
+
+    Панель сама ничего не считает — она управляет воркерами и показывает, что
+    где лежит. Файлы (исходники, нарезка, готовые ролики) остаются на том
+    воркере, который их сделал, поэтому проект закрепляется за воркером на
+    стадии загрузки и дальше не переезжает.
+    """
+
+    __tablename__ = "workers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Имя из SHORTS_WORKER_NAME (или имя хоста). Ключ, по которому воркер
+    # опознаёт себя при перезапуске и находит свои закрепления.
+    name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    hostname: Mapped[str] = mapped_column(String(200), default="")
+    # Откуда панель забирает превью и готовые ролики этого воркера.
+    # Пусто — файлы недоступны, задачи всё равно выполняются.
+    public_url: Mapped[str] = mapped_column(String(500), default="")
+    labels: Mapped[list[str]] = mapped_column(JSON, default=list)
+    version: Mapped[str] = mapped_column(String(64), default="")
+
+    concurrency: Mapped[int] = mapped_column(Integer, default=0)
+    running_jobs: Mapped[int] = mapped_column(Integer, default=0)
+    disk_free: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Выключенный воркер не берёт новых задач (текущие доделывает).
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class Account(Base):
     """Подключённый аккаунт площадки. Токены хранятся зашифрованными."""
 
@@ -259,6 +302,12 @@ class Account(Base):
     meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    # Где выполняется публикация. Профиль браузера и сессия площадки лежат на
+    # конкретной машине и не переезжают, поэтому аккаунт закрепляется за
+    # воркером. Пусто — публикует любой свободный (годится для API-аккаунтов).
+    worker_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workers.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -274,6 +323,7 @@ class Account(Base):
     projects: Mapped[list["Project"]] = relationship(
         secondary=account_projects, back_populates="accounts", order_by="Project.created_at.desc()"
     )
+    worker: Mapped["Worker | None"] = relationship(lazy="joined")
 
 
 class Publication(Base):
@@ -340,6 +390,11 @@ class Job(Base):
     )
     publication_id: Mapped[int | None] = mapped_column(
         ForeignKey("publications.id", ondelete="CASCADE")
+    )
+    # Пусто — возьмёт любой воркер. Заполнено — только этот: у него файлы
+    # проекта или профиль аккаунта, на другой машине задача бессмысленна.
+    worker_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workers.id", ondelete="SET NULL"), index=True
     )
 
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

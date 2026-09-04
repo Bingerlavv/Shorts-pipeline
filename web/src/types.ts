@@ -53,6 +53,9 @@ export interface Project {
   has_transcript: boolean;
   /** Куда публикуется проект. Хранится связью, а не в config_overrides. */
   account_ids: number[];
+  /** На какой машине лежат файлы проекта. null — ещё не загружали. */
+  worker_id: number | null;
+  worker_name: string;
 }
 
 export interface Segment {
@@ -112,6 +115,9 @@ export interface Account {
   created_at: string;
   /** Проекты, которые публикуются в этот аккаунт. */
   project_ids: number[];
+  /** Где выполняется публикация: профиль браузера привязан к машине. */
+  worker_id: number | null;
+  worker_name: string;
 }
 
 export interface Publication {
@@ -214,4 +220,26 @@ export interface LiveState {
     error: string;
     has_render: boolean;
   }[];
+}
+
+export interface Worker {
+  id: number;
+  name: string;
+  hostname: string;
+  /** Откуда панель забирает превью и готовые ролики. Пусто — файлы не видны. */
+  public_url: string;
+  labels: string[];
+  version: string;
+  concurrency: number;
+  running_jobs: number;
+  disk_free: number;
+  is_enabled: boolean;
+  last_error: string;
+  last_seen_at: string | null;
+  created_at: string;
+  /** Считается сервером по времени последней отметки. */
+  online: boolean;
+  projects: number;
+  accounts: number;
+  queued: number;
 }

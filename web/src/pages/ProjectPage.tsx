@@ -2,10 +2,9 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { DeleteProjectDialog } from "../components/DeleteProjectDialog";
-import { dropPath, setDeep } from "../components/ConfigEditor";
 import { OverrideEditor } from "../components/OverrideEditor";
-import { SchedulePicker } from "../components/SchedulePicker";
 import { PublishTargets } from "../components/PublishTargets";
+import { ReleasePlan } from "../components/ReleasePlan";
 import { ReelMap } from "../components/ReelMap";
 import SegmentCard from "../components/SegmentCard";
 import { StageTracker } from "../components/StageTracker";
@@ -46,6 +45,7 @@ export default function ProjectPage({ live }: { live: LiveState }) {
   const project = useAsync<Project>(() => api.projects.get(projectId), [projectId]);
   const segments = useAsync<Segment[]>(() => api.projects.segments(projectId), [projectId]);
   const accounts = useAsync<Account[]>(() => api.accounts.list(), []);
+  const presets = useAsync<Preset[]>(() => api.presets.list(), []);
 
   const [filter, setFilter] = useState<SegmentStatus | "all">("all");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -77,6 +77,14 @@ export default function ProjectPage({ live }: { live: LiveState }) {
   }
 
   const data = project.data;
+
+  // Действует ли сейчас сетка выхода — своя у проекта или из пресета.
+  const effectiveSchedule =
+    data?.config_overrides?.publish?.schedule ??
+    (presets.data ?? []).find((item) => item.id === data?.preset_id)?.config?.publish
+      ?.schedule ??
+    {};
+  const scheduleActive = Boolean(effectiveSchedule.enabled);
 
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -212,12 +220,13 @@ export default function ProjectPage({ live }: { live: LiveState }) {
         />
       </div>
 
-      <div className="card" style={{ marginBottom: 20 }}>
+      <div className="card" style={{ marginBottom: 14 }}>
         <StageTracker
           project={data}
           segments={all}
           activeJob={activeJob}
           busy={busy}
+          scheduleActive={scheduleActive}
           onRun={(stage) => act(() => api.projects.runStage(projectId, stage))}
           onRenderApproved={() => act(() => api.projects.renderApproved(projectId))}
           onPublishAll={() =>
@@ -243,6 +252,12 @@ export default function ProjectPage({ live }: { live: LiveState }) {
           </div>
         )}
       </div>
+
+      <ReleasePlan
+        project={data}
+        presets={presets.data ?? []}
+        onSaved={() => project.reload()}
+      />
 
       <div className="card" style={{ marginBottom: 14 }}>
         <PublishTargets
@@ -348,13 +363,6 @@ function ProjectSettings({
   const [initialised, setInitialised] = useState(false);
 
   const ownSchedule = Boolean(overrides.publish?.schedule);
-  // Что действует сейчас: своё, иначе пресетное, иначе пусто. Нужно, чтобы
-  // включение своей сетки начиналось с текущих значений, а не с чистого листа.
-  const effectiveSchedule =
-    overrides.publish?.schedule ??
-    (presets.data ?? []).find((item: Preset) => String(item.id) === presetId)?.config?.publish
-      ?.schedule ??
-    {};
 
   if (!initialised) {
     setInitialised(true);
@@ -407,30 +415,10 @@ function ProjectSettings({
 
       <h3 style={{ marginTop: 20, marginBottom: 4 }}>Расписание выхода</h3>
       <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>
-        Своё расписание для этого проекта. Выключено — берётся из пресета.
+        {ownSchedule
+          ? "У проекта своя сетка выхода. Правится в панели проекта — блок «Расписание выхода» сверху."
+          : "Берётся из пресета. Задать своё — блок «Расписание выхода» в панели проекта сверху."}
       </p>
-      <label className="check" style={{ marginBottom: 10 }}>
-        <input
-          type="checkbox"
-          checked={ownSchedule}
-          onChange={(event) => {
-            if (event.target.checked) {
-              // Отталкиваемся от того, что уже действует, а не от пустоты:
-              // иначе включение галочки молча сбрасывало бы настройки пресета.
-              setOverrides(setDeep(overrides, ["publish", "schedule"], effectiveSchedule));
-            } else {
-              setOverrides(dropPath(overrides, ["publish", "schedule"]));
-            }
-          }}
-        />
-        Задать расписание отдельно для этого проекта
-      </label>
-      {ownSchedule && (
-        <SchedulePicker
-          value={overrides.publish?.schedule ?? {}}
-          onChange={(next) => setOverrides(setDeep(overrides, ["publish", "schedule"], next))}
-        />
-      )}
 
       <h3 style={{ marginTop: 20, marginBottom: 4 }}>Отличия от пресета</h3>
       <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>

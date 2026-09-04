@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..agent.assets import ensure_local
 from ..models import Asset, Preset, Project, Segment
 from .config_schema import resolve_config
 
@@ -35,13 +36,18 @@ def config_for_segment(db: Session, segment: Segment) -> dict[str, Any]:
 
 
 def asset_path(db: Session, asset_id: int | None) -> Path | None:
+    """Файл материала на этой машине.
+
+    Единственная точка, через которую монтаж добирается до масок, баннеров,
+    LUT и шрифтов. На панели файл лежит по пути из базы; на удалённом воркере
+    его там нет — он скачивается с панели и кладётся в кэш.
+    """
     if not asset_id:
         return None
     asset = db.get(Asset, asset_id)
     if asset is None:
         return None
-    path = Path(asset.path)
-    return path if path.exists() else None
+    return ensure_local(asset)
 
 
 def pick_background(db: Session, config: dict[str, Any], seed: int | None) -> Path | None:
@@ -57,7 +63,7 @@ def pick_background(db: Session, config: dict[str, Any], seed: int | None) -> Pa
     paths = [
         path
         for path in (asset_path(db, asset_id) for asset_id in background.get("asset_ids") or [])
-        if path is not None and path.exists()
+        if path is not None
     ]
     if not paths:
         return None

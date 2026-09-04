@@ -10,6 +10,7 @@ import type {
   Segment,
   SystemStatus,
   Transcript,
+  Worker,
 } from "./types";
 
 export class ApiError extends Error {
@@ -134,6 +135,15 @@ export const api = {
     tiktokAuthUrl: () => get<{ url: string }>("/api/accounts/tiktok/auth-url"),
     tiktokRedirectUri: () =>
       get<{ redirect_uri: string }>("/api/accounts/tiktok/redirect-uri"),
+    tiktokBrowser: (body: {
+      name: string;
+      proxy?: string;
+      login_now?: boolean;
+      locale?: string;
+      timezone?: string;
+    }) => post<Account>("/api/accounts/tiktok/browser", body),
+    tiktokRelogin: (id: number) =>
+      post<{ ok: boolean; message: string }>(`/api/accounts/${id}/tiktok-login`),
     instagramDiscover: (accessToken: string) =>
       post<{ access_token: string; accounts: any[] }>("/api/accounts/instagram/discover", {
         access_token: accessToken,
@@ -157,6 +167,8 @@ export const api = {
         "/api/accounts/instagram/login",
         body,
       ),
+    setWorker: (id: number, workerId: number | null) =>
+      put<Account>(`/api/accounts/${id}/worker`, { worker_id: workerId }),
     verify: (id: number) => post<{ ok: boolean; message: string }>(`/api/accounts/${id}/verify`),
     toggle: (id: number) => post<Account>(`/api/accounts/${id}/toggle`),
     remove: (id: number, force = false) =>
@@ -204,6 +216,16 @@ export const api = {
     retry: (id: number) => post<{ job_id: number }>(`/api/jobs/${id}/retry`),
     clearCompleted: () => del<{ deleted: number }>("/api/jobs/completed"),
     clearFailed: () => del<{ deleted: number }>("/api/jobs/failed"),
+  },
+  workers: {
+    list: () => get<Worker[]>("/api/workers"),
+    toggle: (id: number) => post<Worker>(`/api/workers/${id}/toggle`),
+    remove: (id: number, force = false) =>
+      del<void>(`/api/workers/${id}${force ? "?force=true" : ""}`),
+    jobs: (id: number) =>
+      get<{ running: { id: number; type: string; progress: number; message: string; project_id: number | null }[] }>(
+        `/api/workers/${id}/jobs`,
+      ),
   },
   system: {
     status: () => get<SystemStatus>("/api/system/status"),

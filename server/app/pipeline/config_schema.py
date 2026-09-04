@@ -285,6 +285,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "disable_stitch": False,
             # Отдельного описания у TikTok нет — только подпись под роликом.
             "caption_template": "{title}\n\n{hashtags}",
+            # Только для аккаунтов через свой браузер (Patchright): гонять
+            # выкладку скрытым окном. Выключи, если хочешь видеть процесс или
+            # если TikTok в headless просит проверку.
+            "headless": True,
         },
         "schedule": {
             "enabled": False,

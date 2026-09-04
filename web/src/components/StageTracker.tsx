@@ -33,6 +33,7 @@ export function StageTracker({
   segments,
   activeJob,
   busy,
+  scheduleActive,
   onRun,
   onRenderApproved,
   onPublishAll,
@@ -41,6 +42,8 @@ export function StageTracker({
   segments: Segment[];
   activeJob?: { type: string };
   busy: boolean;
+  /** Включена сетка выхода — кнопка ставит по расписанию, а не публикует сразу. */
+  scheduleActive?: boolean;
   onRun: (stage: string) => void;
   onRenderApproved: () => void;
   onPublishAll: () => void;
@@ -141,10 +144,15 @@ export function StageTracker({
       result: published > 0 ? `вышло ${published}` : "не публиковали",
       state: running === "segment.publish" ? "running" : state(5, rendered === 0),
       action: {
-        label: "Опубликовать",
+        label: scheduleActive ? "Поставить по расписанию" : "Опубликовать",
         run: onPublishAll,
         disabled: busy || rendered === 0,
-        hint: rendered > 0 ? undefined : "Сначала смонтируй ролики",
+        hint:
+          rendered === 0
+            ? "Сначала смонтируй ролики"
+            : scheduleActive
+              ? "Ролики встанут в очередь по сетке выхода (сверху)"
+              : undefined,
       },
     },
   ];

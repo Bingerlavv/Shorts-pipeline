@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import FileResponse
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..agent.files import file_url
 from ..db import get_db
 from ..models import Job, JobStatus, Segment, SegmentStatus
 from ..pipeline.stages.publish import verify_download_token
@@ -174,35 +176,112 @@ def render_segment(
     return {"job_id": job.id}
 
 
-def _serve(path_value: str, media_type: str, filename: str) -> FileResponse:
+# Заголовки, которые имеет смысл протащить от воркера к браузеру: без
+# Content-Range и Accept-Ranges не работает перемотка предпросмотра.
+_PASS_THROUGH = ("content-type", "content-length", "content-range", "accept-ranges")
+
+PROXY_CHUNK = 256 * 1024
+
+
+def _proxy_from_worker(worker, kind: str, segment_id: int, request: Request) -> StreamingResponse:
+    """Тянет файл с воркера и отдаёт его дальше браузеру, не складывая в память."""
+    url = file_url(worker.public_url, kind, segment_id)
+    headers = {}
+    if "range" in request.headers:
+        headers["Range"] = request.headers["range"]
+
+    # trust_env=False: воркер часто за VPN/прокси, а ходить к нему надо напрямую.
+    client = httpx.Client(timeout=httpx.Timeout(30.0, read=None), trust_env=False)
+    try:
+        response = client.send(client.build_request("GET", url, headers=headers), stream=True)
+    except Exception as exc:  # noqa: BLE001
+        client.close()
+        raise HTTPException(
+            504,
+            f"воркер «{worker.name}» не отдал файл ({exc}). Проверь, что он запущен и "
+            f"доступен по адресу {worker.public_url}",
+        ) from exc
+
+    if response.status_code >= 400:
+        code = response.status_code
+        response.close()
+        client.close()
+        raise HTTPException(
+            502 if code != 404 else 410,
+            f"воркер «{worker.name}» ответил {code} — файла у него нет",
+        )
+
+    def stream():  # noqa: ANN202
+        try:
+            yield from response.iter_bytes(PROXY_CHUNK)
+        finally:
+            response.close()
+            client.close()
+
+    passed = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() in _PASS_THROUGH
+    }
+    return StreamingResponse(stream(), status_code=response.status_code, headers=passed)
+
+
+def _serve(
+    segment: Segment,
+    kind: str,
+    path_value: str,
+    media_type: str,
+    filename: str,
+    request: Request,
+):  # noqa: ANN201
+    """Файл лежит либо здесь, либо на воркере, который его сделал."""
+    if path_value:
+        path = Path(path_value)
+        if path.is_file():
+            return FileResponse(path, media_type=media_type, filename=filename)
+
+    worker = segment.project.worker if segment.project else None
+    if worker is not None and worker.public_url:
+        return _proxy_from_worker(worker, kind, segment.id, request)
+
     if not path_value:
         raise HTTPException(404, "файл ещё не создан")
-    path = Path(path_value)
-    if not path.exists():
-        raise HTTPException(410, "файл был удалён с диска")
-    return FileResponse(path, media_type=media_type, filename=filename)
+    if worker is not None:
+        raise HTTPException(
+            409,
+            f"файл лежит на воркере «{worker.name}», а он не показывает адрес для "
+            "отдачи. Задай ему SHORTS_WORKER_PUBLIC_URL",
+        )
+    raise HTTPException(410, "файл был удалён с диска")
 
 
 @router.get("/{segment_id}/render")
 def download_render(
+    request: Request,
     segment_id: int,
     db: Session = Depends(get_db),
     token: str = Query("", description="подпись для публичного доступа (Instagram)"),
-) -> FileResponse:
+):  # noqa: ANN201
     segment = _get_segment(db, segment_id)
     # Панель ходит из локальной сети; Instagram — из интернета, ему нужна подпись.
     if token and not verify_download_token(segment, token):
         raise HTTPException(403, "неверная подпись ссылки")
-    return _serve(segment.render_path, "video/mp4", f"short_{segment_id}.mp4")
+    return _serve(
+        segment, "render", segment.render_path, "video/mp4", f"short_{segment_id}.mp4", request
+    )
 
 
 @router.get("/{segment_id}/clip")
-def download_clip(segment_id: int, db: Session = Depends(get_db)) -> FileResponse:
+def download_clip(request: Request, segment_id: int, db: Session = Depends(get_db)):  # noqa: ANN201
     segment = _get_segment(db, segment_id)
-    return _serve(segment.clip_path, "video/mp4", f"clip_{segment_id}.mp4")
+    return _serve(
+        segment, "clip", segment.clip_path, "video/mp4", f"clip_{segment_id}.mp4", request
+    )
 
 
 @router.get("/{segment_id}/thumb")
-def download_thumb(segment_id: int, db: Session = Depends(get_db)) -> FileResponse:
+def download_thumb(request: Request, segment_id: int, db: Session = Depends(get_db)):  # noqa: ANN201
     segment = _get_segment(db, segment_id)
-    return _serve(segment.thumb_path, "image/jpeg", f"thumb_{segment_id}.jpg")
+    return _serve(
+        segment, "thumb", segment.thumb_path, "image/jpeg", f"thumb_{segment_id}.jpg", request
+    )

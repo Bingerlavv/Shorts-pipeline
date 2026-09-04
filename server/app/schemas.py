@@ -70,6 +70,9 @@ class ProjectOut(ORMModel):
     has_transcript: bool = False
     # Куда публикуется проект. Хранится связью, в config_overrides её нет.
     account_ids: list[int] = Field(default_factory=list)
+    # На какой машине лежат файлы проекта. Пусто — ещё не загружали.
+    worker_id: int | None = None
+    worker_name: str = ""
 
 
 # --- транскрипт ---
@@ -187,6 +190,15 @@ class AccountOut(ORMModel):
     created_at: datetime
     # Какие проекты уходят в этот аккаунт. Связь редактируется отсюда же.
     project_ids: list[int] = Field(default_factory=list)
+    # Где выполняется публикация: профиль браузера привязан к машине.
+    worker_id: int | None = None
+    worker_name: str = ""
+
+
+class PinWorker(BaseModel):
+    """На какой машине обслуживать аккаунт. None — на любой свободной."""
+
+    worker_id: int | None = None
 
 
 class LinkProjects(BaseModel):
@@ -259,6 +271,61 @@ class InstagramLoginResult(BaseModel):
     status: str
     message: str = ""
     account: AccountOut | None = None
+
+
+class TikTokBrowserConnect(BaseModel):
+    """Подключение TikTok через свой браузер (Patchright).
+
+    OAuth здесь нет: заводится отдельный профиль Chromium, вход в TikTok
+    выполняется один раз видимым окном.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    # Весь трафик профиля пойдёт через него. Принимаем и вид продавцов
+    # (host:port:логин:пароль), и вид библиотек (схема://логин:пароль@host:port).
+    proxy: str = ""
+    # Открыть окно входа сразу после создания профиля.
+    login_now: bool = True
+    # Необязательно, под гео прокси: язык интерфейса (ru-RU, en-US…) и часовой
+    # пояс (Europe/Moscow…). Пусто — подберутся автоматически и геонейтрально.
+    locale: str = Field(default="", max_length=15)
+    timezone: str = Field(default="", max_length=64)
+
+    @field_validator("name", "locale", "timezone")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("proxy")
+    @classmethod
+    def _normalize_proxy(cls, value: str) -> str:
+        try:
+            return normalize_proxy(value)
+        except ProxyFormatError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+# --- воркеры ---
+
+class WorkerOut(ORMModel):
+    id: int
+    name: str
+    hostname: str
+    public_url: str
+    labels: list[str] = Field(default_factory=list)
+    version: str
+    concurrency: int
+    running_jobs: int
+    disk_free: int
+    is_enabled: bool
+    last_error: str
+    last_seen_at: datetime | None
+    created_at: datetime
+    # Считается на лету, в таблице этого нет.
+    online: bool = False
+    projects: int = 0
+    accounts: int = 0
+    queued: int = 0
 
 
 # --- публикации ---

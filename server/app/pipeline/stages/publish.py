@@ -324,13 +324,22 @@ def run_publish(ctx: JobContext) -> None:
             extra = {"category_id": "22", "made_for_kids": False}
         elif publication.platform == "tiktok":
             tiktok = config_for_segment(ctx.db, segment)["publish"].get("tiktok", {})
-            extra = {
-                "mode": tiktok.get("mode", "draft"),
-                "privacy": publication.privacy,
-                "disable_comment": bool(tiktok.get("disable_comment")),
-                "disable_duet": bool(tiktok.get("disable_duet")),
-                "disable_stitch": bool(tiktok.get("disable_stitch")),
-            }
+            if (account.meta or {}).get("auth") == "patchright":
+                # Через свой браузер приватность выбирается в TikTok Studio;
+                # mode здесь означает лишь «жать ли Опубликовать» (иначе — в
+                # черновики Studio).
+                extra = {
+                    "publish_now": str(tiktok.get("mode", "draft")) == "direct",
+                    "headless": bool(tiktok.get("headless", True)),
+                }
+            else:
+                extra = {
+                    "mode": tiktok.get("mode", "draft"),
+                    "privacy": publication.privacy,
+                    "disable_comment": bool(tiktok.get("disable_comment")),
+                    "disable_duet": bool(tiktok.get("disable_duet")),
+                    "disable_stitch": bool(tiktok.get("disable_stitch")),
+                }
         else:
             extra = {"share_to_feed": True}
             # Вход по логину и паролю отдаёт файл напрямую, Graph API — только по ссылке.
